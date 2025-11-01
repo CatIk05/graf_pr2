@@ -1,0 +1,9 @@
+{
+  "package_name": "firefox",
+  "repository_url": "http://archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages",
+  "test_mode": false,
+  "test_repository_path": "",
+  "output_file": "dependency_graph.svg",
+  "filter_substring": ""
+}
+
