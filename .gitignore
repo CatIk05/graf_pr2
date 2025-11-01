@@ -25,3 +25,6 @@ test_configs/
 *.pdf
 *.dot
 
+# macOS
+.DS_Store
+
