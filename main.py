@@ -340,55 +340,79 @@ class DependencyGraph:
     
     def build_graph_bfs(self, root_package: str) -> Dict[str, Set[str]]:
         """
-        Строит граф зависимостей используя BFS с рекурсией.
+        Строит граф зависимостей используя классический BFS с очередью и рекурсией.
+        Реализация аналогична алгоритму топологической сортировки (строки 484-506).
+        
+        BFS алгоритм:
+        1. Использует очередь для обхода по уровням
+        2. Обрабатывает пакеты в порядке очереди
+        3. Рекурсивно обрабатывает зависимости каждого пакета
+        
         Возвращает граф в виде словаря: пакет -> множество зависимостей.
         """
         self.graph = {}
         self.visited = set()
         self.cycles = []
         
+        # Пропускаем фильтруемые пакеты
+        if self._should_filter_package(root_package):
+            return self.graph
+        
         # Инициализируем граф для корневого пакета
-        if not self._should_filter_package(root_package):
-            self.graph[root_package] = set()
-            # Начинаем BFS обход с рекурсивным построением подграфов
-            self._bfs_with_recursion(root_package, set())
+        self.graph[root_package] = set()
+        
+        # Очередь для BFS обхода: (пакет, путь_от_корня)
+        queue = deque([(root_package, [root_package])])
+        processed = set()
+        self.visited.add(root_package)
+        
+        # BFS обход (аналогично строкам 484-506)
+        while queue:
+            current_package, current_path = queue.popleft()
+            
+            if current_package in processed:
+                continue
+            
+            processed.add(current_package)
+            
+            # Обрабатываем текущий пакет и добавляем его зависимости в очередь
+            # Затем рекурсивно обрабатываем зависимости
+            self._process_package_with_recursion(current_package, current_path, queue, processed)
         
         return self.graph
     
-    def _bfs_with_recursion(self, package: str, path: Set[str]) -> None:
+    def _process_package_with_recursion(self, package: str, path: List[str], queue: deque, processed: Set[str]) -> None:
         """
-        BFS обход с рекурсивным построением подграфов зависимостей.
-        path - множество пакетов в текущем пути (для обнаружения циклов).
-        """
-        # Проверка на цикл
-        if package in path:
-            # Обнаружен цикл - создаем список цикла
-            # path содержит путь от корня до текущего пакета
-            cycle_path = list(path)
-            # Находим позицию, где начинается цикл
-            cycle_start = cycle_path.index(package)
-            # Извлекаем только циклическую часть
-            cycle = cycle_path[cycle_start:] + [package]
-            # Нормализуем цикл (убираем дубликаты в конце)
-            if len(cycle) > 1 and cycle[0] == cycle[-1]:
-                cycle = cycle[:-1] + [cycle[0]]
-            # Проверяем, что это новый цикл
-            if cycle and cycle not in self.cycles:
-                self.cycles.append(cycle)
-            return
+        Обрабатывает пакет и рекурсивно обрабатывает его зависимости.
+        Соответствует BFS алгоритму: добавляет зависимости в очередь, 
+        затем рекурсивно обрабатывает каждую зависимость.
         
+        Args:
+            package: Текущий пакет для обработки
+            path: Путь от корня до текущего пакета (для обнаружения циклов)
+            queue: Очередь для добавления новых пакетов
+            processed: Множество обработанных пакетов
+        """
         # Пропускаем фильтруемые пакеты
         if self._should_filter_package(package):
             return
         
-        # Добавляем пакет в текущий путь
-        new_path = path | {package}
+        # Проверка на цикл: если пакет уже в пути от корня
+        if package in path[:-1]:  # Исключаем последний элемент (сам пакет)
+            # Обнаружен цикл
+            cycle_start = path.index(package)
+            cycle = path[cycle_start:] + [package]
+            # Нормализуем цикл
+            if len(cycle) > 1 and cycle[0] == cycle[-1]:
+                cycle = cycle[:-1] + [cycle[0]]
+            if cycle and cycle not in self.cycles:
+                self.cycles.append(cycle)
+            return
         
         # Получаем прямые зависимости
         try:
             direct_deps = self.package_parser.get_package_dependencies(package)
         except PackageNotFoundError:
-            # Если пакет не найден, просто возвращаемся
             return
         
         # Фильтруем зависимости по подстроке
@@ -404,34 +428,32 @@ class DependencyGraph:
         # Добавляем зависимости в граф
         self.graph[package].update(filtered_deps)
         
-        # Рекурсивно обрабатываем каждую зависимость (BFS с рекурсией)
+        # Обрабатываем каждую зависимость (BFS: добавляем в очередь, затем рекурсия)
         for dep in filtered_deps:
-            # Если зависимость еще не была обработана, обрабатываем её
-            if dep not in self.visited:
-                self.visited.add(dep)
-                # Рекурсивный вызов для построения подграфа
-                self._bfs_with_recursion(dep, new_path)
-    
-    
-    def get_all_packages(self) -> Set[str]:
-        """Возвращает множество всех пакетов в графе"""
-        all_packages = set(self.graph.keys())
-        for deps in self.graph.values():
-            all_packages.update(deps)
-        return all_packages
-    
-    def get_statistics(self) -> Dict[str, Any]:
-        """Возвращает статистику по графу"""
-        all_packages = self.get_all_packages()
-        total_edges = sum(len(deps) for deps in self.graph.values())
-        
-        return {
-            'total_packages': len(all_packages),
-            'total_edges': total_edges,
-            'cycles_found': len(self.cycles),
-            'cycles': self.cycles
-        }
-    
+            # Проверка на цикл в зависимостях
+            if dep in path:
+                # Обнаружен цикл
+                cycle_start = path.index(dep)
+                cycle = path[cycle_start:] + [dep]
+                if len(cycle) > 1 and cycle[0] == cycle[-1]:
+                    cycle = cycle[:-1] + [cycle[0]]
+                if cycle and cycle not in self.cycles:
+                    self.cycles.append(cycle)
+                continue
+            
+            # Если зависимость еще не была обработана (аналогично строкам 492-496)
+            if dep not in processed:
+                if dep not in self.visited:
+                    self.visited.add(dep)
+                
+                # Добавляем в очередь (BFS: сначала добавляем все зависимости уровня)
+                new_path = path + [dep]
+                queue.append((dep, new_path))
+                
+                # Рекурсивный вызов для обработки зависимостей (BFS с рекурсией)
+                # Это обеспечивает глубокую обработку подграфа каждой зависимости
+                self._process_package_with_recursion(dep, new_path, queue, processed)
+
     def get_load_order(self, root_package: str) -> List[str]:
         """
         Определяет порядок загрузки зависимостей используя топологическую сортировку.
@@ -440,10 +462,6 @@ class DependencyGraph:
         В нашем графе: graph[pkg] = {deps} означает, что pkg зависит от deps.
         Порядок загрузки: сначала загружаем все зависимости, потом сам пакет.
         
-        Алгоритм Кана (Kahn's algorithm):
-        1. Вычисляем входящие степени (in-degree) - сколько пакетов зависят от данного
-        2. Начинаем с узлов с in-degree = 0 (нет зависимостей от других пакетов в графе)
-        3. Добавляем их в результат и уменьшаем in-degree зависимых пакетов
         """
         if root_package not in self.graph:
             return []
@@ -504,6 +522,28 @@ class DependencyGraph:
             result.append(root_package)
         
         return result
+    
+    
+    def get_all_packages(self) -> Set[str]:
+        """Возвращает множество всех пакетов в графе"""
+        all_packages = set(self.graph.keys())
+        for deps in self.graph.values():
+            all_packages.update(deps)
+        return all_packages
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Возвращает статистику по графу"""
+        all_packages = self.get_all_packages()
+        total_edges = sum(len(deps) for deps in self.graph.values())
+        
+        return {
+            'total_packages': len(all_packages),
+            'total_edges': total_edges,
+            'cycles_found': len(self.cycles),
+            'cycles': self.cycles
+        }
+    
+
 
 
 def main():
