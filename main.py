@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Инструмент визуализации графа зависимостей для менеджера пакетов.
-Этап 3: Основные операции
+Этап 4: Дополнительные операции
 """
 
 import sys
@@ -431,6 +431,79 @@ class DependencyGraph:
             'cycles_found': len(self.cycles),
             'cycles': self.cycles
         }
+    
+    def get_load_order(self, root_package: str) -> List[str]:
+        """
+        Определяет порядок загрузки зависимостей используя топологическую сортировку.
+        Возвращает список пакетов в порядке их загрузки (зависимости перед зависимыми).
+        
+        В нашем графе: graph[pkg] = {deps} означает, что pkg зависит от deps.
+        Порядок загрузки: сначала загружаем все зависимости, потом сам пакет.
+        
+        Алгоритм Кана (Kahn's algorithm):
+        1. Вычисляем входящие степени (in-degree) - сколько пакетов зависят от данного
+        2. Начинаем с узлов с in-degree = 0 (нет зависимостей от других пакетов в графе)
+        3. Добавляем их в результат и уменьшаем in-degree зависимых пакетов
+        """
+        if root_package not in self.graph:
+            return []
+        
+        all_packages = self.get_all_packages()
+        
+        # Строим обратный граф: пакет -> множество пакетов, которые от него зависят
+        # reverse_graph[dep] содержит все пакеты, которые зависят от dep
+        reverse_graph: Dict[str, Set[str]] = {}
+        in_degree: Dict[str, int] = {}
+        
+        # Инициализируем
+        for pkg in all_packages:
+            reverse_graph[pkg] = set()
+            in_degree[pkg] = 0
+        
+        # Строим обратный граф и вычисляем in-degree
+        # graph[pkg] = {deps} означает: pkg зависит от deps
+        # Значит: reverse_graph[dep] должен содержать pkg
+        for pkg, deps in self.graph.items():
+            for dep in deps:
+                # pkg зависит от dep, значит dep должен быть загружен до pkg
+                reverse_graph[dep].add(pkg)
+                # in-degree[pkg] увеличиваем, так как pkg зависит от dep
+                in_degree[pkg] = in_degree.get(pkg, 0) + 1
+        
+        # Алгоритм Кана для топологической сортировки
+        queue = deque()
+        result = []
+        processed = set()
+        
+        # Находим все узлы с in-degree = 0 (нет зависимостей от других пакетов в графе)
+        for pkg in all_packages:
+            if in_degree.get(pkg, 0) == 0:
+                queue.append(pkg)
+        
+        # Обрабатываем очередь
+        while queue:
+            current = queue.popleft()
+            if current in processed:
+                continue
+            processed.add(current)
+            result.append(current)
+            
+            # Уменьшаем in-degree для всех пакетов, которые зависят от current
+            for dependent in reverse_graph.get(current, set()):
+                if dependent not in processed:
+                    in_degree[dependent] = in_degree.get(dependent, 0) - 1
+                    if in_degree.get(dependent, 0) == 0:
+                        queue.append(dependent)
+        
+        # Убеждаемся, что корневой пакет в результате
+        if root_package not in result:
+            result.append(root_package)
+        else:
+            # Перемещаем корневой пакет в конец, если он уже есть
+            result.remove(root_package)
+            result.append(root_package)
+        
+        return result
 
 
 def main():
@@ -541,6 +614,29 @@ def main():
                     print(f"\n{pkg}: (нет зависимостей)")
         else:
             print("Граф пуст")
+        
+        print("=" * 60)
+        
+        # Этап 4: Порядок загрузки зависимостей
+        print("\n" + "=" * 60)
+        print("Этап 4: Порядок загрузки зависимостей")
+        print("=" * 60)
+        
+        print(f"\nОпределение порядка загрузки для пакета '{package_name}'...")
+        load_order = dependency_graph.get_load_order(package_name)
+        
+        if load_order:
+            print(f"✓ Порядок загрузки определен")
+            print(f"\nПорядок загрузки зависимостей ({len(load_order)} пакетов):")
+            print("-" * 60)
+            for i, pkg in enumerate(load_order, 1):
+                marker = " ← " if pkg == package_name else "   "
+                print(f"{i:3d}.{marker}{pkg}")
+            print("-" * 60)
+            print(f"\nПримечание: пакеты загружаются в указанном порядке.")
+            print(f"Пакет '{package_name}' загружается последним.")
+        else:
+            print("Не удалось определить порядок загрузки (возможно, есть циклы)")
         
         print("=" * 60)
         
