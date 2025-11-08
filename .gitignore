@@ -28,3 +28,7 @@ test_configs/
 # macOS
 .DS_Store
 
+# Тестовые файлы
+test_repo_*.txt
+test_stage3.py
+

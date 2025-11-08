@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Инструмент визуализации графа зависимостей для менеджера пакетов.
-Этап 2: Сбор данных
+Этап 3: Основные операции
 """
 
 import sys
@@ -10,7 +10,8 @@ import os
 import re
 import gzip
 import urllib.request
-from typing import Dict, Any, Set, List, Optional
+from typing import Dict, Any, Set, List, Optional, Tuple
+from collections import deque
 from pathlib import Path
 
 
@@ -320,6 +321,118 @@ class PackageParser:
         return package_name in self.packages
 
 
+class DependencyGraph:
+    """Класс для построения графа зависимостей с учетом транзитивности"""
+    
+    def __init__(self, package_parser: PackageParser, filter_substring: str = ""):
+        self.package_parser = package_parser
+        self.filter_substring = filter_substring.lower() if filter_substring else ""
+        self.graph: Dict[str, Set[str]] = {}  # Граф зависимостей: пакет -> множество зависимостей
+        self.visited: Set[str] = set()  # Посещенные пакеты для обнаружения циклов
+        self.current_path: Set[str] = set()  # Текущий путь для обнаружения циклов
+        self.cycles: List[List[str]] = []  # Найденные циклы
+    
+    def _should_filter_package(self, package_name: str) -> bool:
+        """Проверяет, нужно ли фильтровать пакет по подстроке"""
+        if not self.filter_substring:
+            return False
+        return self.filter_substring in package_name.lower()
+    
+    def build_graph_bfs(self, root_package: str) -> Dict[str, Set[str]]:
+        """
+        Строит граф зависимостей используя BFS с рекурсией.
+        Возвращает граф в виде словаря: пакет -> множество зависимостей.
+        """
+        self.graph = {}
+        self.visited = set()
+        self.cycles = []
+        
+        # Инициализируем граф для корневого пакета
+        if not self._should_filter_package(root_package):
+            self.graph[root_package] = set()
+            # Начинаем BFS обход с рекурсивным построением подграфов
+            self._bfs_with_recursion(root_package, set())
+        
+        return self.graph
+    
+    def _bfs_with_recursion(self, package: str, path: Set[str]) -> None:
+        """
+        BFS обход с рекурсивным построением подграфов зависимостей.
+        path - множество пакетов в текущем пути (для обнаружения циклов).
+        """
+        # Проверка на цикл
+        if package in path:
+            # Обнаружен цикл - создаем список цикла
+            # path содержит путь от корня до текущего пакета
+            cycle_path = list(path)
+            # Находим позицию, где начинается цикл
+            cycle_start = cycle_path.index(package)
+            # Извлекаем только циклическую часть
+            cycle = cycle_path[cycle_start:] + [package]
+            # Нормализуем цикл (убираем дубликаты в конце)
+            if len(cycle) > 1 and cycle[0] == cycle[-1]:
+                cycle = cycle[:-1] + [cycle[0]]
+            # Проверяем, что это новый цикл
+            if cycle and cycle not in self.cycles:
+                self.cycles.append(cycle)
+            return
+        
+        # Пропускаем фильтруемые пакеты
+        if self._should_filter_package(package):
+            return
+        
+        # Добавляем пакет в текущий путь
+        new_path = path | {package}
+        
+        # Получаем прямые зависимости
+        try:
+            direct_deps = self.package_parser.get_package_dependencies(package)
+        except PackageNotFoundError:
+            # Если пакет не найден, просто возвращаемся
+            return
+        
+        # Фильтруем зависимости по подстроке
+        filtered_deps = {
+            dep for dep in direct_deps 
+            if not self._should_filter_package(dep)
+        }
+        
+        # Инициализируем граф для пакета, если его еще нет
+        if package not in self.graph:
+            self.graph[package] = set()
+        
+        # Добавляем зависимости в граф
+        self.graph[package].update(filtered_deps)
+        
+        # Рекурсивно обрабатываем каждую зависимость (BFS с рекурсией)
+        for dep in filtered_deps:
+            # Если зависимость еще не была обработана, обрабатываем её
+            if dep not in self.visited:
+                self.visited.add(dep)
+                # Рекурсивный вызов для построения подграфа
+                self._bfs_with_recursion(dep, new_path)
+    
+    
+    def get_all_packages(self) -> Set[str]:
+        """Возвращает множество всех пакетов в графе"""
+        all_packages = set(self.graph.keys())
+        for deps in self.graph.values():
+            all_packages.update(deps)
+        return all_packages
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Возвращает статистику по графу"""
+        all_packages = self.get_all_packages()
+        total_edges = sum(len(deps) for deps in self.graph.values())
+        
+        return {
+            'total_packages': len(all_packages),
+            'total_edges': total_edges,
+            'cycles_found': len(self.cycles),
+            'cycles': self.cycles
+        }
+
+
 def main():
     """Основная функция приложения"""
     try:
@@ -380,6 +493,54 @@ def main():
             print(f"\nВсего прямых зависимостей: {len(dependencies)}")
         else:
             print("Пакет не имеет прямых зависимостей")
+        
+        print("=" * 60)
+        
+        # Этап 3: Построение графа зависимостей
+        print("\n" + "=" * 60)
+        print("Этап 3: Построение графа зависимостей")
+        print("=" * 60)
+        
+        filter_substring = config.get('filter_substring', '')
+        if filter_substring:
+            print(f"\nФильтрация пакетов: исключаются пакеты, содержащие '{filter_substring}'")
+        
+        print(f"\nПостроение графа зависимостей для пакета '{package_name}'...")
+        dependency_graph = DependencyGraph(package_parser, filter_substring)
+        graph = dependency_graph.build_graph_bfs(package_name)
+        
+        # Статистика графа
+        stats = dependency_graph.get_statistics()
+        print(f"✓ Граф построен")
+        print(f"  - Всего пакетов в графе: {stats['total_packages']}")
+        print(f"  - Всего зависимостей (ребер): {stats['total_edges']}")
+        print(f"  - Найдено циклов: {stats['cycles_found']}")
+        
+        # Вывод информации о циклах
+        if stats['cycles_found'] > 0:
+            print("\n⚠ Обнаружены циклические зависимости:")
+            for i, cycle in enumerate(stats['cycles'], 1):
+                print(f"  Цикл {i}: {' -> '.join(cycle)}")
+        else:
+            print("  ✓ Циклических зависимостей не обнаружено")
+        
+        # Вывод структуры графа
+        print("\n" + "=" * 60)
+        print("Структура графа зависимостей:")
+        print("=" * 60)
+        
+        if graph:
+            sorted_packages = sorted(graph.keys())
+            for pkg in sorted_packages:
+                deps = sorted(graph[pkg])
+                if deps:
+                    print(f"\n{pkg}:")
+                    for dep in deps:
+                        print(f"  → {dep}")
+                else:
+                    print(f"\n{pkg}: (нет зависимостей)")
+        else:
+            print("Граф пуст")
         
         print("=" * 60)
         
